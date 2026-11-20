@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# ------------------------------------------------------------
+# vigilo — Grafana Agent (classic, static mode) — Kafka Connect
+# Purpose: install the Grafana Agent static binary and configure it to
+#          scrape a Kafka Connect cluster's metrics endpoint, remote_writing
+#          metrics to a Mimir/Prometheus-remote_write-compatible backend.
+# Requires env: METRICS_REMOTE_WRITE_URL, TENANT_ID, KAFKA_CONNECT_TARGETS,
+#               KAFKA_CONNECT_KAFKA_URIS
+# Optional env: GRAFANA_AGENT_VERSION, ARTIFACT_BASE_URL,
+#               KAFKA_CONNECT_CLUSTER_NAME, PORTAL_API_BASE_URL,
+#               PORTAL_DASHBOARD_TEMPLATE_ID, PORTAL_REGISTER_SCRIPT_URL
+# Usage: sudo ./kafka-connect.sh
+#
+# Note: this migrates `kafka_connect.sh` from the source onboarding scripts.
+# See kafka.sh in this folder (migrated from `kafka-script.sh`) for the
+# broker-side sibling — the two share almost all of their structure because
+# the source scripts were themselves near-duplicates of each other.
+#
+# The source script's "integrations.kafka_exporter" block (talking directly
+# to Kafka brokers via kafka_uris) is kept here as shipped, even though this
+# script is nominally about Kafka Connect — that's what the production
+# config actually ran, likely because this host's Connect cluster shares
+# brokers with a Kafka cluster also being monitored this way. Leave
+# KAFKA_CONNECT_KAFKA_URIS unset-but-required if you don't need it; point it
+# at your real broker list if you do.
+# ------------------------------------------------------------
+set -euo pipefail
+
+: "${METRICS_REMOTE_WRITE_URL:?set METRICS_REMOTE_WRITE_URL, e.g. https://mimir.example.internal/api/v1/push}"
+: "${TENANT_ID:?set TENANT_ID, e.g. your Mimir/Loki org ID}"
+: "${KAFKA_CONNECT_TARGETS:?set KAFKA_CONNECT_TARGETS, comma-separated host:port list of Kafka Connect metrics endpoints, e.g. kafka-connect-1.example.com:7077}"
+: "${KAFKA_CONNECT_KAFKA_URIS:?set KAFKA_CONNECT_KAFKA_URIS, comma-separated kafka broker host:port list for the built-in kafka_exporter integration, e.g. kafka-broker-1.example.com:9092}"
+
+KAFKA_CONNECT_CLUSTER_NAME="${KAFKA_CONNECT_CLUSTER_NAME:-kafka-connect-cluster}"
+
+# Pin the agent version explicitly rather than always pulling ":latest" —
+# makes installs reproducible and lets an operator roll back by changing
+# one env var. Grafana Agent (classic/static mode) is archived upstream in
+# favor of Grafana Alloy; check https://github.com/grafana/agent/releases
+# for the newest release still published there, or point ARTIFACT_BASE_URL
+# at your own internal mirror if you vendor the binary.
+GRAFANA_AGENT_VERSION="${GRAFANA_AGENT_VERSION:-v0.40.3}"
+ARTIFACT_BASE_URL="${ARTIFACT_BASE_URL:-https://github.com/grafana/agent/releases/download/${GRAFANA_AGENT_VERSION}}"
+# NOTE: the real release asset is `grafana-agent-linux-amd64.zip` (verified
+# against the GitHub releases API for this tag) — see kafka.sh for why this
+# intentionally differs from the sibling scripts in grafana-agent/linux/.
+ARTIFACT_NAME="grafana-agent-linux-amd64"
+
+SERVICE="kafka_connect_exporter.service"
+
+echo "Tenant ID: ${TENANT_ID}"
+
+# Renders a comma-separated list as an indented YAML sequence, one
+# "- item" per line, so operators can pass target lists as plain env vars
+# instead of hand-editing YAML.
+csv_to_yaml_list() {
+  local csv="$1" indent="$2" item
+  local IFS=','
+  for item in $csv; do
+    printf '%s- %s\n' "$indent" "$item"
+  done
+}
+
+curl -fsSL -O --noproxy "*" "${ARTIFACT_BASE_URL}/${ARTIFACT_NAME}.zip"
+unzip -o "${ARTIFACT_NAME}.zip"
+chmod a+x "${ARTIFACT_NAME}"
+sudo mv "${ARTIFACT_NAME}" /usr/local/bin/
+
+KAFKA_CONNECT_TARGETS_YAML="$(csv_to_yaml_list "${KAFKA_CONNECT_TARGETS}" "                ")"
+KAFKA_CONNECT_URIS_YAML="$(csv_to_yaml_list "${KAFKA_CONNECT_KAFKA_URIS}" "      ")"
+
+if [[ ! -e /etc/grafana-agent-kafka-connect-config.yaml ]]; then
+  CONFIG="$(cat <<EOF
+prometheus:
+  configs:
+    - name: integrations
+      remote_write:
+        - url: ${METRICS_REMOTE_WRITE_URL}
+          headers:
+            X-Scope-OrgID: ${TENANT_ID}
+      scrape_configs:
+        - job_name: integrations/kafka-connect
+          static_configs:
+            - targets:
+${KAFKA_CONNECT_TARGETS_YAML}
+  global:
+    scrape_interval: 60s
+  wal_directory: /tmp/grafana-agent-kafka-connect-wal
+server:
+  http_listen_port: 12341
+  http_listen_address: 127.0.0.1
+  log_level: error
+
+integrations:
+  kafka_exporter:
+    enabled: true
+    kafka_cluster_name: ${KAFKA_CONNECT_CLUSTER_NAME}
+    kafka_uris:
+${KAFKA_CONNECT_URIS_YAML}
+  prometheus_remote_write:
+    - url: ${METRICS_REMOTE_WRITE_URL}
+      headers:
+        X-Scope-OrgID: ${TENANT_ID}
+EOF
+)"
+  printf '%s\n' "${CONFIG}" | sudo tee /etc/grafana-agent-kafka-connect-config.yaml >/dev/null
+fi
+
+sudo tee /etc/systemd/system/kafka_connect_exporter.service >/dev/null <<EOM
+[Unit]
+Description=Grafana Agent (Kafka Connect metrics)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecReload=/bin/kill -HUP \$MAINPID
+ExecStart=/usr/local/bin/${ARTIFACT_NAME} \\
+    --server.grpc-listen-address 127.0.0.1 \\
+    --server.grpc-listen-port 9100 \\
+    --config.file /etc/grafana-agent-kafka-connect-config.yaml
+
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOM
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now "$SERVICE"
+sudo systemctl status "$SERVICE" --no-pager || true
+
+# Optional: register a dashboard for this tenant with an observability
+# portal, if one is configured. Skipped entirely when PORTAL_API_BASE_URL
+# isn't set, so the agent install itself never depends on a SaaS backend.
+# (The source script's equivalent "create alerts" call was already
+# commented out in production, so it isn't reproduced here.)
+if [[ -n "${PORTAL_API_BASE_URL:-}" ]]; then
+  : "${PORTAL_DASHBOARD_TEMPLATE_ID:?set PORTAL_DASHBOARD_TEMPLATE_ID when PORTAL_API_BASE_URL is set}"
+  response1=$(curl -s --location --request POST "${PORTAL_API_BASE_URL}/api/dashboards/v1.1/create" \
+    --header "tenant-id: ${TENANT_ID}" \
+    --header 'Content-Type: application/json' \
+    --data-raw "{\"template_ids\": [\"${PORTAL_DASHBOARD_TEMPLATE_ID}\"]}")
+  echo "Dashboard API response: ${response1}"
+fi
+
+# Optional: hand off to a fleet-registration script hosted on your own
+# mirror (e.g. to record this host against inventory/CMDB). No public
+# equivalent exists for this step, so it's opt-in via env var.
+if [[ -n "${PORTAL_REGISTER_SCRIPT_URL:-}" ]]; then
+  curl -fsSL --noproxy "*" -L -O "${PORTAL_REGISTER_SCRIPT_URL}"
+  chmod a+x server-info.sh
+  bash server-info.sh "${TENANT_ID}" kafka
+fi

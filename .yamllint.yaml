@@ -1,0 +1,22 @@
+# ------------------------------------------------------------
+# vigilo — yamllint configuration
+# Purpose: lint any standalone YAML in this repo (e.g. future
+#          docker-compose/Grafana-provisioning files). Today's configs are
+#          embedded as rendered heredocs inside the .sh/.ps1 installers
+#          rather than standalone .yaml files, so this currently has
+#          nothing to check — it activates automatically as real YAML
+#          files are added.
+# ------------------------------------------------------------
+extends: default
+
+rules:
+  line-length: disable
+  document-start: disable
+  truthy:
+    allowed-values: ["true", "false"]
+    # GitHub Actions workflow files use bare `on:`/`true`/`false` keys and
+    # values that YAML 1.1 would otherwise read as booleans — don't flag
+    # key names, only values.
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1

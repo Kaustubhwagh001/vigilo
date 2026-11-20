@@ -1,0 +1,188 @@
+// vigilo — Grafana Alloy (River config) — Windows host monitoring
+// Purpose: self-monitor the Alloy process itself, scrape windows_exporter
+//          host metrics (CPU, memory, disk, net, services, time sync — plus
+//          the collector's built-in "mssql" collector, safe to leave
+//          enabled even on hosts with no SQL Server installed), and ship
+//          the Application + System Windows event logs to Loki.
+// Requires env: METRICS_REMOTE_WRITE_URL, LOKI_PUSH_URL, TENANT_ID
+// Apply with: alloy run windows-host-monitoring.alloy
+
+prometheus.exporter.self "integrations_alloy" { }
+
+discovery.relabel "integrations_alloy" {
+  targets = prometheus.exporter.self.integrations_alloy.targets
+
+  rule {
+    target_label = "instance"
+    replacement  = constants.hostname
+  }
+
+  rule {
+    target_label = "alloy_hostname"
+    replacement  = constants.hostname
+  }
+
+  rule {
+    target_label = "job"
+    replacement  = "integrations/alloy-check"
+  }
+}
+
+prometheus.scrape "integrations_alloy" {
+  targets    = discovery.relabel.integrations_alloy.output
+  forward_to = [prometheus.relabel.integrations_alloy.receiver]
+
+  scrape_interval = "60s"
+}
+
+prometheus.relabel "integrations_alloy" {
+  forward_to = [prometheus.remote_write.metrics_service.receiver]
+
+  rule {
+    source_labels = ["__name__"]
+    regex         = "(prometheus_target_sync_length_seconds_sum|prometheus_target_scrapes_.*|prometheus_target_interval.*|prometheus_sd_discovered_targets|alloy_build.*|prometheus_remote_write_wal_samples_appended_total|process_start_time_seconds)"
+    action        = "keep"
+  }
+
+}
+
+prometheus.exporter.windows "integrations_windows_exporter" {
+  enabled_collectors = ["cpu", "cs", "logical_disk", "net", "os", "service", "system", "time", "diskdrive","process","mssql"]
+}
+discovery.relabel "integrations_windows_exporter" {
+  targets = prometheus.exporter.windows.integrations_windows_exporter.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "integrations/windows_exporter"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = constants.hostname
+  }
+
+  rule {
+    target_label = "environment"
+    replacement  = "production"
+  }
+   rule {
+    target_label = "area"
+    replacement  = "rcp"
+  }
+}
+prometheus.scrape "integrations_windows_exporter" {
+  targets    = discovery.relabel.integrations_windows_exporter.output
+  forward_to = [prometheus.relabel.integrations_windows_exporter.receiver]
+  job_name   = "integrations/windows_exporter"
+}
+prometheus.relabel "integrations_windows_exporter" {
+  forward_to = [prometheus.remote_write.metrics_service.receiver]
+
+  rule {
+    action        = "keep"
+    regex         = "(up|windows_cpu_interrupts_total|windows_cpu_time_total|windows_cs_hostname|windows_cs_logical_processors|windows_cs_physical_memory_bytes|windows_disk_drive_status|windows_logical_disk_avg_read_requests_queued|windows_logical_disk_avg_write_requests_queued|windows_logical_disk_free_bytes|windows_logical_disk_idle_seconds_total|windows_logical_disk_read_bytes_total|windows_logical_disk_read_seconds_total|windows_logical_disk_reads_total|windows_logical_disk_size_bytes|windows_logical_disk_write_bytes_total|windows_logical_disk_write_seconds_total|windows_logical_disk_writes_total|windows_net_bytes_received_total|windows_net_bytes_sent_total|windows_net_packets_outbound_discarded_total|windows_net_packets_outbound_errors_total|windows_net_packets_received_discarded_total|windows_net_packets_received_errors_total|windows_net_packets_received_unknown_total|windows_os_info|windows_os_paging_limit_bytes|windows_os_physical_memory_free_bytes|windows_os_timezone|windows_service_status|windows_system_context_switches_total|windows_system_processor_queue_length|windows_system_system_up_time|windows_time_computed_time_offset_seconds|windows_time_ntp_round_trip_delay_seconds|windows_process_io_bytes_total|windows_logical_disk_split_ios_total|windows_logical_disk_free_bytes|windows_system_exception_dispatches_total|windows_system_threads|windows_service_state|windows_process_private_bytes|windows_process_cpu_time_total|windows_os_virtual_memory_bytes|windows_os_virtual_memory_free_bytes|windows_net_bytes_total|windows_os_virtual_memory_bytes|windows_os_virtual_memory_bytes|windows_net_current_bandwidth_bytes|windows_mssql_transactions_tempdb_free_space_bytes|windows_mssql_genstats_sql_trace_io_provider_lock_waits|windows_mssql_databases_data_files_size_bytes|windows_mssql_collector_duration_seconds|windows_mssql_genstats_tempdb_recovery_unit_ids_generated|windows_mssql_genstats_logical_connections|windows_mssql_genstats_active_temp_tables|windows_mssql_genstats_mars_deadlocks|windows_mssql_genstats_logins|windows_mssql_genstats_logouts|windows_mssql_genstats_connection_resets|windows_mssql_transactions_longest_transaction_running_seconds|windows_mssql_genstats_user_connections|windows_mssql_memmgr_total_server_memory_bytes|windows_mssql_bufman_buffer_cache_hits|windows_mssql_memmgr_connection_memory_bytes|windows_mssql_memmgr_stolen_server_memory_bytes|windows_mssql_bufman_page_writes|windows_mssql_bufman_page_reads|windows_mssql_databases_log_used_percent|windows_mssql_bufman_free_list_stalls|windows_mssql_bufman_page_life_expectancy_seconds|windows_mssql_memmgr_pending_memory_grants|windows_mssql_memmgr_target_server_memory_bytes|windows_mssql_sqlstats_batch_requests|windows_mssql_sqlstats_sql_compilations|windows_mssql_sqlstats_sql_recompilations|windows_mssql_genstats_blocked_processes|windows_mssql_databases_transactions|windows_mssql_databases_write_transactions|windows_mssql_databases_log_flushes|windows_mssql_databases_log_flush_wait_seconds|windows_mssql_locks_lock_timeouts|windows_mssql_databases_group_commit_stall_seconds|windows_mssql_locks_lock_wait_seconds|windows_mssql_databases_log_pool_disk_reads|windows_mssql_accessmethods_full_scans|windows_mssql_bufman_page_lookups|windows_mssql_bufman_read_ahead_pages|windows_mssql_bufman_lazywrites|windows_mssql_bufman_checkpoint_pages|windows_mssql_memmgr_sql_cache_memory_bytes|windows_mssql_memmgr_optimizer_memory_bytes|windows_mssql_memmgr_log_pool_memory_bytes|windows_mssql_memmgr_lock_memory_bytes|windows_mssql_memmgr_database_cache_memory_bytes|windows_mssql_locks_lock_requests|windows_mssql_accessmethods_page_splits|windows_mssql_databases_xtp_controller_dlc_fetch_latency_seconds|windows_mssql_databases_xtp_controller_dlc_peak_latency_seconds|windows_mssql_databases_log_files_size_bytes|windows_mssql_databases_log_pool_cache_misses|windows_mssql_databases_log_pool_empty_free_pool_pushes|windows_mssql_databases_log_pool_hash_deletes|windows_mssql_databases_log_pool_hash_inserts|windows_mssql_databases_log_pool_log_scan_pushes|windows_mssql_databases_log_pool_requests|windows_mssql_databases_log_pool_requests_old_vlf|windows_mssql_databases_log_pool_total_active_log_bytes|windows_mssql_databases_log_pool_total_shared_pool_bytes|windows_mssql_databases_log_files_used_size_bytes|windows_mssql_databases_log_flush_waits|windows_mssql_databases_log_flush_write_seconds|windows_mssql_databases_log_flushed_bytes)"
+    source_labels = ["__name__"]
+  }
+}
+
+loki.process "logs_integrations_windows_exporter_application" {
+  forward_to = [loki.write.logs_service.receiver]
+
+  stage.json {
+    expressions = {
+      level  = "levelText",
+      source = "source",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level  = "",
+      source = "",
+    }
+  }
+   stage.static_labels {
+    values = {
+      area        = "example",
+      environment = "production",
+    }
+  }
+}
+loki.relabel "logs_integrations_windows_exporter_application" {
+  forward_to = [loki.process.logs_integrations_windows_exporter_application.receiver]
+
+  rule {
+    source_labels = ["computer"]
+    target_label  = "agent_hostname"
+  }
+}
+loki.source.windowsevent "logs_integrations_windows_exporter_application" {
+  locale                 = 1033
+  eventlog_name          = "Application"
+  bookmark_path          = "./bookmarks-app.xml"
+  poll_interval          = "0s"
+  use_incoming_timestamp = true
+  forward_to             = [loki.relabel.logs_integrations_windows_exporter_application.receiver]
+  labels                 = {
+    instance = constants.hostname,
+    job      = "integrations/windows_exporter",
+  }
+}
+loki.process "logs_integrations_windows_exporter_system" {
+  forward_to = [loki.write.logs_service.receiver]
+
+  stage.json {
+    expressions = {
+      level  = "levelText",
+      source = "source",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level  = "",
+      source = "",
+    }
+  }
+}
+loki.relabel "logs_integrations_windows_exporter_system" {
+  forward_to = [loki.process.logs_integrations_windows_exporter_system.receiver]
+
+  rule {
+    source_labels = ["computer"]
+    target_label  = "agent_hostname"
+  }
+}
+loki.source.windowsevent "logs_integrations_windows_exporter_system" {
+  locale                 = 1033
+  eventlog_name          = "System"
+  bookmark_path          = "./bookmarks-sys.xml"
+  poll_interval          = "0s"
+  use_incoming_timestamp = true
+  forward_to             = [loki.relabel.logs_integrations_windows_exporter_system.receiver]
+  labels                 = {
+    instance = constants.hostname,
+    job      = "integrations/windows_exporter",
+  }
+}
+
+
+prometheus.remote_write "metrics_service" {
+  endpoint {
+    url = sys.env("METRICS_REMOTE_WRITE_URL")
+    headers = {
+      "X-Scope-OrgID" = sys.env("TENANT_ID"),
+    }
+  }
+}
+
+loki.write "logs_service" {
+  endpoint {
+    url = sys.env("LOKI_PUSH_URL")
+    headers = {
+      "X-Scope-OrgID" = sys.env("TENANT_ID"),
+    }
+
+  }
+}
